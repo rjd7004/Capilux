@@ -1175,8 +1175,27 @@
    * ==================================================================== */
   function registerServiceWorker() {
     if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+    var hadController = !!navigator.serviceWorker.controller;
+    var reloading = false;
+    // A new deployment took control: reload straight away unless a scan is in progress,
+    // in which case offer it via a toast (the next launch picks it up regardless).
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!hadController || reloading) { hadController = true; return; }
+      var app = window.bioRadar;
+      if (app && app.running) {
+        app._toast('UPDATE READY · RELOAD TO APPLY');
+      } else {
+        reloading = true;
+        window.location.reload();
+      }
+    });
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(function (err) {
+      navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' }).then(function (reg) {
+        // check for a newer deployment whenever the app comes back to the foreground
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') reg.update().catch(function () {});
+        });
+      }).catch(function (err) {
         console.warn('Service worker registration failed', err);
       });
     });

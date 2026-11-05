@@ -2,12 +2,14 @@
  * Bio-Radar rPPG — sw.js
  * Offline-capable service worker.
  *   • App shell: pre-cached, served stale-while-revalidate (navigations: network-first).
+ *     Shell fetches bypass the HTTP cache (GitHub Pages sends max-age=600), so a new
+ *     deployment is never pre-cached from stale copies.
  *   • MediaPipe runtime (jsDelivr) + face-landmarker model (Google Storage): version-pinned
  *     URLs → cache-first, so after the first successful launch the scanner works offline.
  */
 'use strict';
 
-var VERSION = 'v1.1.0';
+var VERSION = 'v1.1.1';
 var SHELL_CACHE = 'bioradar-shell-' + VERSION;
 var RUNTIME_CACHE = 'bioradar-runtime-v1'; // immutable CDN assets survive app updates
 
@@ -35,7 +37,9 @@ var CDN_HOSTS = ['cdn.jsdelivr.net', 'storage.googleapis.com'];
 self.addEventListener('install', function (event) {
   event.waitUntil(
     caches.open(SHELL_CACHE)
-      .then(function (cache) { return cache.addAll(SHELL_ASSETS); })
+      .then(function (cache) {
+        return cache.addAll(SHELL_ASSETS.map(function (url) { return new Request(url, { cache: 'reload' }); }));
+      })
       .then(function () { return self.skipWaiting(); })
   );
 });
@@ -72,7 +76,7 @@ function cacheFirst(request) {
 function staleWhileRevalidate(request) {
   return caches.open(SHELL_CACHE).then(function (cache) {
     return cache.match(request).then(function (hit) {
-      var network = fetch(request).then(function (response) {
+      var network = fetch(request, { cache: 'no-cache' }).then(function (response) {
         if (response && response.ok) cache.put(request, response.clone());
         return response;
       }).catch(function () { return hit || Response.error(); });
@@ -82,7 +86,7 @@ function staleWhileRevalidate(request) {
 }
 
 function networkFirstNavigation(request) {
-  return fetch(request).then(function (response) {
+  return fetch(request.url, { cache: 'no-cache', credentials: 'same-origin' }).then(function (response) {
     if (response && response.ok) {
       var copy = response.clone();
       caches.open(SHELL_CACHE).then(function (cache) { cache.put('./index.html', copy); });
