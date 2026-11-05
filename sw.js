@@ -7,7 +7,7 @@
  */
 'use strict';
 
-var VERSION = 'v1.0.0';
+var VERSION = 'v1.1.0';
 var SHELL_CACHE = 'bioradar-shell-' + VERSION;
 var RUNTIME_CACHE = 'bioradar-runtime-v1'; // immutable CDN assets survive app updates
 
@@ -17,7 +17,11 @@ var SHELL_ASSETS = [
   './styles.css',
   './app.js',
   './rppg-processor.js',
+  './respiration.js',
+  './face-metrics.js',
   './hud-renderer.js',
+  './history.js',
+  './coach.js',
   './manifest.json',
   './icons/icon.svg',
   './icons/icon-192.png',

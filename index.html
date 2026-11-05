@@ -46,7 +46,7 @@
         </svg>
         <div class="brand-text">
           <span class="brand-name">BIO-RADAR</span>
-          <span class="brand-sub">rPPG // v1.0</span>
+          <span class="brand-sub">rPPG // v1.1</span>
         </div>
       </div>
       <nav class="hud-controls" aria-label="Scanner controls">
@@ -59,6 +59,39 @@
       <span id="status-text" class="status-text">SYSTEM STANDBY</span>
     </div>
     <div id="telemetry" class="telemetry">CAM OFFLINE</div>
+
+    <!-- ============ Tool dock ============ -->
+    <nav class="dock" aria-label="Tools">
+      <button id="dock-breathe" class="dock-btn" type="button" aria-label="Breathing coach">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="8.5" stroke-dasharray="3 2.5"/></svg>
+        <span>BREATHE</span>
+      </button>
+      <button id="dock-mode" class="dock-btn" type="button" aria-label="Switch sensor mode">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 15c0-4 2-8 5-8s5 4 5 8"/><path d="M9.5 15c0-3 1-5.5 2.5-5.5s2.5 2.5 2.5 5.5"/><path d="M12 12v6"/><path d="M5 18c1 2 3 3 7 3s6-1 7-3"/></svg>
+        <span id="dock-mode-label">FINGER</span>
+      </button>
+      <button id="dock-ref" class="dock-btn" type="button" aria-label="Compare with a reference reading">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="5" width="10" height="14" rx="3"/><path d="M9 2h6M9 22h6M10 12h1.5l1-2 1.5 4 1-2h1"/></svg>
+        <span>REF</span>
+      </button>
+      <button id="dock-log" class="dock-btn" type="button" aria-label="Session history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16"/><path d="M6 16l4-5 3 3 5-7"/></svg>
+        <span>LOG</span>
+      </button>
+    </nav>
+
+    <!-- ============ Breathing coach card ============ -->
+    <section id="coach-card" class="coach-card glass" hidden aria-live="polite">
+      <div class="coach-head"><span id="coach-title">RESONANCE BREATHING</span><span id="coach-time" class="coach-time">3:00</span></div>
+      <div id="coach-stats" class="coach-stats">
+        <div><span>SYNC</span><b id="coach-sync">--</b></div>
+        <div><span>HR SWING</span><b id="coach-swing">--</b></div>
+        <div><span>PACE /MIN</span><b id="coach-pace">6.0</b></div>
+      </div>
+      <canvas id="coach-canvas" class="coach-canvas"></canvas>
+      <div id="coach-summary" class="coach-summary" hidden></div>
+      <button id="coach-stop" class="ctl-btn coach-stop" type="button">END SESSION</button>
+    </section>
 
     <!-- ============ Guidance prompt ============ -->
     <div id="guidance" class="guidance" data-level="info" hidden>
@@ -84,9 +117,9 @@
       </div>
 
       <div class="panel glass panel-gauge">
-        <div class="panel-head"><span>QUALITY</span></div>
+        <div class="panel-head"><span>SIGNAL QUALITY</span></div>
         <canvas id="gauge" class="gauge"></canvas>
-        <div id="quality-label" class="panel-sub center">SIGNAL IDLE</div>
+        <div id="quality-label" class="panel-sub center">IDLE</div>
       </div>
 
       <div class="panel glass panel-stress">
@@ -97,6 +130,13 @@
         </div>
         <div class="stress-bar"><div id="stress-fill" class="stress-fill"></div></div>
         <div id="stress-sub" class="panel-sub">BEATS 0/15</div>
+      </div>
+
+      <div class="chips" aria-label="Secondary metrics">
+        <div class="chip glass" id="chip-resp"><span class="chip-k">RESP</span><b id="resp-value">--</b><i>/MIN</i></div>
+        <div class="chip glass" id="chip-blink"><span class="chip-k">BLINK</span><b id="blink-value">--</b><i>/MIN</i></div>
+        <div class="chip glass" id="chip-tension"><span class="chip-k">TENSION</span><b id="tension-value">--</b></div>
+        <div class="chip glass" id="chip-eyes" data-level="none"><span class="chip-k">EYES</span><b id="eyes-value">--</b></div>
       </div>
 
       <div class="panel glass panel-wave">
@@ -130,11 +170,118 @@
           <span class="btn-corner tl"></span><span class="btn-corner br"></span>
           <span class="btn-label">INITIALIZE SCANNER</span>
         </button>
+        <div class="splash-alt">
+          <button id="start-finger-btn" class="link-btn" type="button">FINGERTIP MODE (REAR CAMERA)</button>
+          <button id="splash-log-btn" class="link-btn" type="button">SESSION LOG</button>
+        </div>
         <ol id="boot-log" class="boot-log" aria-live="polite"></ol>
         <p id="error" class="error" role="alert" hidden></p>
         <p class="disclaimer">All video is processed on-device and never leaves your phone. Experimental wellness visualization — <b>not a medical device</b>; do not use for diagnosis.</p>
       </div>
     </div>
+
+    <!-- ============ Sheet: breathing coach setup ============ -->
+    <div id="sheet-coach" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="coach-sheet-title">
+      <div class="sheet-panel glass">
+        <header class="sheet-head"><h2 id="coach-sheet-title">BREATHING COACH</h2><button class="sheet-close" type="button" data-close aria-label="Close">&#10005;</button></header>
+        <div class="sheet-body">
+          <p class="sheet-note">Follow the ring: breathe <b>in</b> as it grows, <b>out</b> as it shrinks. Slow breathing near 6 breaths/min makes your heart rate rise and fall in step with each breath (resonance). <b>SYNC</b> shows how strongly that's happening.</p>
+          <div class="field">
+            <span class="field-k">PACE · BREATHS / MIN</span>
+            <div class="seg" id="coach-pace-seg">
+              <button type="button" data-pace="4.5">4.5</button>
+              <button type="button" data-pace="5">5</button>
+              <button type="button" data-pace="5.5">5.5</button>
+              <button type="button" data-pace="6" class="is-active">6</button>
+              <button type="button" data-pace="7">7</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-k">DURATION</span>
+            <div class="seg" id="coach-dur-seg">
+              <button type="button" data-dur="60">1 MIN</button>
+              <button type="button" data-dur="180" class="is-active">3 MIN</button>
+              <button type="button" data-dur="300">5 MIN</button>
+            </div>
+          </div>
+          <label class="toggle"><input id="coach-sound" type="checkbox" checked> <span>SOFT AUDIO CUES</span></label>
+          <p class="sheet-note dim">Tip: fingertip mode gives the cleanest beat-to-beat signal for this exercise. Stop if you feel light-headed.</p>
+          <p id="coach-setup-msg" class="ref-msg bad"></p>
+          <button id="coach-start" class="start-btn small" type="button"><span class="btn-corner tl"></span><span class="btn-corner br"></span><span class="btn-label">BEGIN SESSION</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ Sheet: reference reading ============ -->
+    <div id="sheet-ref" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="ref-sheet-title">
+      <div class="sheet-panel glass">
+        <header class="sheet-head"><h2 id="ref-sheet-title">CHECK AGAINST REFERENCE</h2><button class="sheet-close" type="button" data-close aria-label="Close">&#10005;</button></header>
+        <div class="sheet-body">
+          <div class="field"><span class="field-k">SCANNER READING (CAPTURED NOW)</span><div id="ref-app" class="ref-app">--</div></div>
+          <div class="field">
+            <label class="field-k" for="ref-input">REFERENCE HEART RATE (BPM)</label>
+            <input id="ref-input" class="text-in" type="number" inputmode="numeric" min="30" max="220" placeholder="e.g. 68">
+          </div>
+          <div class="field">
+            <label class="field-k" for="ref-source">SOURCE</label>
+            <select id="ref-source" class="text-in">
+              <option value="watch">Smartwatch / fitness tracker</option>
+              <option value="pulse">Manual pulse count</option>
+              <option value="oximeter">Finger pulse oximeter</option>
+              <option value="chest-strap">Chest strap</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <span class="field-k">NO WATCH? COUNT YOUR PULSE</span>
+            <button id="ref-timer-btn" class="ctl-btn wide" type="button">START 30 s PULSE TIMER</button>
+            <div id="ref-timer" class="ref-timer"></div>
+            <div id="ref-count-row" class="count-row" hidden>
+              <input id="ref-count" class="text-in" type="number" inputmode="numeric" min="10" max="110" placeholder="beats counted">
+              <span>× 2 = BPM</span>
+            </div>
+          </div>
+          <button id="ref-save" class="start-btn small" type="button"><span class="btn-corner tl"></span><span class="btn-corner br"></span><span class="btn-label">SAVE COMPARISON</span></button>
+          <p id="ref-msg" class="ref-msg"></p>
+          <p id="ref-stats" class="ref-stats"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ Sheet: history ============ -->
+    <div id="sheet-history" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="hist-sheet-title">
+      <div class="sheet-panel glass tall">
+        <header class="sheet-head"><h2 id="hist-sheet-title">SESSION LOG</h2><span id="hist-count" class="sheet-meta"></span><button class="sheet-close" type="button" data-close aria-label="Close">&#10005;</button></header>
+        <div class="tabs" role="tablist">
+          <button class="tab is-active" type="button" data-tab="sessions">SESSIONS</button>
+          <button class="tab" type="button" data-tab="trends">TRENDS</button>
+          <button class="tab" type="button" data-tab="accuracy">ACCURACY</button>
+        </div>
+        <div class="sheet-body">
+          <div id="hist-sessions">
+            <p id="hist-empty" class="hist-note">No sessions yet. Readings are saved automatically after ~15 s of good signal. Everything stays on this device.</p>
+            <ul id="hist-list" class="hist-list"></ul>
+          </div>
+          <div id="hist-trends" hidden>
+            <canvas id="trend-hr" class="trend"></canvas>
+            <canvas id="trend-resp" class="trend"></canvas>
+            <canvas id="trend-stress" class="trend"></canvas>
+          </div>
+          <div id="hist-accuracy" hidden>
+            <div id="acc-stats"></div>
+            <canvas id="acc-plot" class="acc-plot"></canvas>
+            <ul id="acc-list" class="acc-list"></ul>
+          </div>
+        </div>
+        <footer class="sheet-foot">
+          <button id="hist-export" class="ctl-btn" type="button">EXPORT CSV</button>
+          <button id="hist-clear" class="ctl-btn danger" type="button">CLEAR ALL</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- ============ Toast ============ -->
+    <div id="toast" class="toast" hidden></div>
 
     <!-- ============ Resume (camera re-bind needs a gesture) ============ -->
     <div id="resume" class="resume" hidden>
@@ -156,7 +303,11 @@
   </script>
 
   <script src="rppg-processor.js"></script>
+  <script src="respiration.js"></script>
+  <script src="face-metrics.js"></script>
   <script src="hud-renderer.js"></script>
+  <script src="history.js"></script>
+  <script src="coach.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

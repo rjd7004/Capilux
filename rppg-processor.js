@@ -14,6 +14,10 @@
  *     → SNR (fundamental + 1st harmonic vs. residual in-band energy) → confidence
  *     → time-domain peak detection → inter-beat intervals → RMSSD / SDNN / Baevsky stress index
  *
+ * Also provides:
+ *   • 'contact' method — single-channel contact PPG for a fingertip pressed over the rear camera
+ *   • ROIFusion — per-region (forehead / cheeks) quality scoring and adaptive weighting
+ *
  * Works as a classic browser script (exposes `window.RPPG`) and as a CommonJS module (Node tests).
  */
 (function (root, factory) {
@@ -40,7 +44,7 @@
     posWindowSec: 1.6,      // POS temporal window (Wang et al.: 1.6 s)
     detrendSec: 2.0,        // moving-average baseline window
     updateInterval: 0.2,    // seconds between full analyses
-    method: 'pos',          // 'pos' | 'chrom'
+    method: 'pos',          // 'pos' | 'chrom' | 'contact' (fingertip over the rear camera)
     spectrumBins: 48,       // bars exported for visualisation
     minIbisForStress: 15,   // IBIs required before the stress index is reported
     ibiHistorySec: 90       // seconds of beat history kept for HRV
@@ -270,6 +274,23 @@
     return S;
   }
 
+  /**
+   * Contact PPG (fingertip over camera + flash). Tissue fully covers the sensor, so a single
+   * well-exposed channel carries the pulse: green when it is in range (strongest haemoglobin
+   * absorption), otherwise red (dominant when the flash is unavailable), otherwise blue.
+   * More blood ⇒ less transmitted light, so the signal is inverted to put systole on top.
+   */
+  function contactProjection(R, G, B) {
+    var N = R.length, chans = [G, R, B], names = ['G', 'R', 'B'];
+    var means = [meanOf(G), meanOf(R), meanOf(B)];
+    var pick = -1, k, i;
+    for (k = 0; k < 3; k++) if (means[k] >= 20 && means[k] <= 235) { pick = k; break; }
+    if (pick < 0) pick = means[1] > 0 ? 1 : (means[0] > 0 ? 0 : 2);
+    var c = chans[pick], m = means[pick], h = new Float64Array(N);
+    if (m > 0) for (i = 0; i < N; i++) h[i] = -(c[i] / m - 1);
+    return { h: h, channel: names[pick] };
+  }
+
   /* ------------------------------------------------------------------ *
    * Processor
    * ------------------------------------------------------------------ */
@@ -302,7 +323,8 @@
     this.lowConfAccum = 0;
     this.lastBeatTime = null;
     this.segmentOpen = false;
-    this.ibis = [];
+    this.ibis = [];           // validated inter-beat intervals {t, ibi, amp}
+    this.beatLog = [];        // every committed beat {t, amp}
     this.result = {
       state: 'idle',            // idle | acquiring | analyzing | locked
       progress: 0,              // 0..1 while acquiring
@@ -314,6 +336,7 @@
       motion: 0,
       locked: false,
       method: this.opts.method,
+      channel: null,            // contact mode: which colour channel carries the pulse
       pulse: new Float32Array(0),
       pulseT0: 0,
       fs: this.opts.fs,
@@ -337,7 +360,7 @@
   RPPGProcessor.prototype.push = function (t, r, g, b, motion) {
     var n = this.tRaw.length;
     if (n && t <= this.tRaw[n - 1]) return;
-    if (!(r > 0 && g > 0 && b > 0)) return;
+    if (!(r >= 0 && g >= 0 && b >= 0) || r + g + b <= 0) return;
     this.tRaw.push(t); this.rRaw.push(r); this.gRaw.push(g); this.bRaw.push(b);
     this.mRaw.push(motion || 0);
     // Trim history (batched splice keeps this O(1) amortised)
@@ -424,9 +447,17 @@
     var padLen = Math.round(fs * 1.5);
 
     /* ---- 2. Colour-space projection ----------------------------------- */
-    var h = o.method === 'chrom'
-      ? chromProjection(rs.R, rs.G, rs.B, this.sos, padLen)
-      : posProjection(rs.R, rs.G, rs.B, Math.round(o.posWindowSec * fs));
+    var h;
+    res.channel = null;
+    if (o.method === 'contact') {
+      var cp = contactProjection(rs.R, rs.G, rs.B);
+      h = cp.h;
+      res.channel = cp.channel;
+    } else if (o.method === 'chrom') {
+      h = chromProjection(rs.R, rs.G, rs.B, this.sos, padLen);
+    } else {
+      h = posProjection(rs.R, rs.G, rs.B, Math.round(o.posWindowSec * fs));
+    }
 
     /* ---- 3. Detrend + band-pass --------------------------------------- */
     h = detrendMovingAverage(h, Math.round(o.detrendSec * fs));
@@ -539,12 +570,17 @@
       if (ok) accepted.push(cand[i]);
     }
     accepted.sort(function (x, y) { return x - y; });
-    var peakTimes = [];
+    var peakTimes = [], peakAmps = [];
+    var halfP = Math.max(2, Math.round(periodSmp / 2));
     for (i = 0; i < accepted.length; i++) {
       var p = accepted[i];
       var pa = beatSig[p - 1], pb = beatSig[p], pc = beatSig[p + 1], dd = pa - 2 * pb + pc;
       var off = dd < 0 ? clamp(0.5 * (pa - pc) / dd, -0.5, 0.5) : 0;
       peakTimes.push(t0 + (p + off) / fs);
+      // peak-to-preceding-trough amplitude in the un-normalised signal (respiratory AM source)
+      var trough = pb;
+      for (var tq = Math.max(0, p - halfP); tq < p; tq++) if (beatSig[tq] < trough) trough = beatSig[tq];
+      peakAmps.push((pb - trough) * bsd);
     }
 
     // Beats are committed to the HRV history only once they sit ≥ 1.5 s inside the window,
@@ -558,9 +594,10 @@
           if (this.segmentOpen && this.lastBeatTime !== null) {
             var ibi = tp - this.lastBeatTime;
             if (ibi >= 0.33 && ibi <= 1.5 && Math.abs(ibi - periodSec) / periodSec < 0.3) {
-              this.ibis.push({ t: tp, ibi: ibi });
+              this.ibis.push({ t: tp, ibi: ibi, amp: peakAmps[i] });
             }
           }
+          this.beatLog.push({ t: tp, amp: peakAmps[i] });
           this.lastBeatTime = tp;
           this.segmentOpen = true;
         }
@@ -569,7 +606,8 @@
       this.segmentOpen = false;
     }
     var oldest = tEnd - o.ibiHistorySec;
-    while (this.ibis.length && (this.ibis[0].t < oldest || this.ibis.length > 160)) this.ibis.shift();
+    while (this.ibis.length && (this.ibis[0].t < oldest || this.ibis.length > 200)) this.ibis.shift();
+    while (this.beatLog.length && (this.beatLog[0].t < oldest || this.beatLog.length > 200)) this.beatLog.shift();
 
     /* ---- 10. HRV & stress --------------------------------------------- */
     var ib = this.ibis.map(function (x) { return x.ibi; });
@@ -623,6 +661,85 @@
     this.result.version = this.version;
   };
 
+  /* ------------------------------------------------------------------ *
+   * ROIFusion — smarter skin selection.
+   * Each region (forehead, left cheek, right cheek) gets its own light-weight
+   * RPPGProcessor that scores its SNR once per second. Regions are normalised by
+   * their own slow running mean (τ = 3 s) before being mixed, so changing weights
+   * never introduces brightness steps; the mix is then fed to the main processor.
+   * ------------------------------------------------------------------ */
+  function ROIFusion(count, options) {
+    this.count = count;
+    this.opts = { tau: 3, minPixels: 40, scoreInterval: 1.0, smoothing: 0.6 };
+    if (options) for (var k in options) this.opts[k] = options[k];
+    this.scorers = [];
+    for (var i = 0; i < count; i++) {
+      this.scorers.push(new RPPGProcessor({ updateInterval: this.opts.scoreInterval, method: 'pos' }));
+    }
+    this.reset();
+  }
+
+  ROIFusion.prototype.reset = function () {
+    this.ema = [];
+    this.weights = [];
+    this.quality = [];
+    this.lastT = null;
+    for (var i = 0; i < this.count; i++) {
+      this.ema.push(null);
+      this.weights.push(1 / this.count);
+      this.quality.push(0);
+      this.scorers[i].reset();
+    }
+  };
+
+  /**
+   * @param {number} t        seconds
+   * @param {Array} samples   per-region {r, g, b, count} (null = region unavailable)
+   * @param {number} motion
+   * @returns {{r,g,b}|null}  fused colour (scaled around 100) or null
+   */
+  ROIFusion.prototype.push = function (t, samples, motion) {
+    var dt = this.lastT === null ? 1 / 30 : clamp(t - this.lastT, 0, 0.5);
+    this.lastT = t;
+    var k = 1 - Math.exp(-dt / this.opts.tau);
+    var maxCount = 1, i;
+    for (i = 0; i < this.count; i++) if (samples[i] && samples[i].count > maxCount) maxCount = samples[i].count;
+
+    // score regions + adapt weights
+    var target = [], tsum = 0;
+    for (i = 0; i < this.count; i++) {
+      var s = samples[i], sc = this.scorers[i];
+      var valid = s && s.count >= this.opts.minPixels;
+      if (valid) sc.push(t, s.r, s.g, s.b, motion);
+      var res = sc.update(t);
+      var q = res.state === 'analyzing' || res.state === 'locked' ? clamp((res.snr + 3) / 9, 0, 1) : 0.5;
+      this.quality[i] = q;
+      var tw = valid ? (0.08 + q * q) * Math.sqrt(s.count / maxCount) : 0;
+      target.push(tw); tsum += tw;
+    }
+    var ka = 1 - Math.exp(-dt / this.opts.smoothing);
+    for (i = 0; i < this.count; i++) {
+      var goal = tsum > 0 ? target[i] / tsum : 0;
+      this.weights[i] += (goal - this.weights[i]) * ka;
+    }
+
+    // normalise each region by its slow mean and mix
+    var fr = 0, fg = 0, fb = 0, wsum = 0;
+    for (i = 0; i < this.count; i++) {
+      var x = samples[i];
+      if (!x || x.count < this.opts.minPixels || !(x.r > 0 && x.g > 0 && x.b > 0)) continue;
+      var e = this.ema[i];
+      if (!e) { e = this.ema[i] = [x.r, x.g, x.b]; }
+      else { e[0] += (x.r - e[0]) * k; e[1] += (x.g - e[1]) * k; e[2] += (x.b - e[2]) * k; }
+      var w = this.weights[i];
+      if (w <= 1e-4) continue;
+      fr += w * x.r / e[0]; fg += w * x.g / e[1]; fb += w * x.b / e[2];
+      wsum += w;
+    }
+    if (wsum <= 0) return null;
+    return { r: 100 * fr / wsum, g: 100 * fg / wsum, b: 100 * fb / wsum };
+  };
+
   /**
    * Baevsky stress index  SI = AMo / (2 · Mo · MxDMn)
    *   Mo    — mode of the IBI histogram (s, 50 ms bins)
@@ -651,6 +768,7 @@
 
   return {
     RPPGProcessor: RPPGProcessor,
+    ROIFusion: ROIFusion,
     DEFAULTS: DEFAULTS,
     DSP: {
       fft: fft,
@@ -663,6 +781,7 @@
       hannWindow: hannWindow,
       posProjection: posProjection,
       chromProjection: chromProjection,
+      contactProjection: contactProjection,
       baevskyStress: baevskyStress,
       mean: meanOf,
       std: stdOf

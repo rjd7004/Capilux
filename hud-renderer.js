@@ -6,6 +6,8 @@
  *   • radar-sweep alignment guide when no subject is present
  *   • rolling ECG-style pulse waveform with glow + trailing fade + beat markers
  *   • signal-quality arc gauge and pulse-spectrum bars
+ *   • fingertip-sensor target (rear-camera contact mode)
+ *   • breathing-coach pacer ring
  *
  * Mobile performance notes: no shadowBlur (expensive on WebKit); glow is faked with
  * layered strokes; static grids are cached on offscreen canvases; DPR is capped at 2.
@@ -152,6 +154,14 @@
 
     if (f.phase === 'standby') return;
 
+    if (f.mode === 'finger') {
+      var fr = Math.min(W, H) * 0.26;
+      this._drawFinger(ctx, W / 2, H * 0.4, fr, t, f, acc);
+      if (f.pacer) this._drawPacer(ctx, W / 2, H * 0.4, fr * 1.15, f.pacer);
+      this.reticle = null;
+      return;
+    }
+
     var T = this._coverTransform();
     if (f.face) {
       var b = f.face.bbox;
@@ -175,16 +185,110 @@
 
     if (this.reticle && this.reticleAlpha > 0.01) {
       ctx.globalAlpha = this.reticleAlpha;
-      if (f.face) this._drawROIs(ctx, T, f.face.rois, acc, f.beat || 0);
-      this._drawReticle(ctx, this.reticle, t, acc, f);
+      if (f.face) this._drawROIs(ctx, T, f.face.rois, acc, f.beat || 0, f.face.weights);
+      if (!f.pacer) this._drawReticle(ctx, this.reticle, t, acc, f);
       ctx.globalAlpha = 1;
     }
     if (!f.face) {
       ctx.globalAlpha = 1 - this.reticleAlpha * 0.7;
-      this._drawRadarGuide(ctx, W, H, t);
+      if (!f.pacer) this._drawRadarGuide(ctx, W, H, t);
       ctx.globalAlpha = 1;
       if (this.reticleAlpha <= 0.01) this.reticle = null;
     }
+    if (f.pacer) {
+      var rc = this.reticle;
+      var pcx = rc ? rc.x + rc.w / 2 : W / 2, pcy = rc ? rc.y + rc.h / 2 : H * 0.4;
+      var pr = rc ? Math.max(rc.w, rc.h) * 0.55 : Math.min(W, H) * 0.3;
+      pr = Math.min(pr, Math.min(W, H) * 0.42);
+      this._drawPacer(ctx, pcx, pcy, pr, f.pacer);
+    }
+  };
+
+  /* Breathing pacer: ring grows on inhale, shrinks on exhale */
+  HUDRenderer.prototype._drawPacer = function (ctx, cx, cy, R, p) {
+    var green = PALETTE.green, cyan = PALETTE.cyan;
+    var col = p.inhale ? green : cyan;
+    var r = R * (0.55 + 0.45 * p.level);
+    // target bounds
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(col, 0.25);
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, R * 0.55, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    // breathing body
+    var g = ctx.createRadialGradient(cx, cy, r * 0.2, cx, cy, r);
+    g.addColorStop(0, rgba(col, 0));
+    g.addColorStop(0.75, rgba(col, 0.06 + 0.06 * p.level));
+    g.addColorStop(1, rgba(col, 0.22));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = rgba(col, 0.25);
+    ctx.lineWidth = 9;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = rgba(col, 0.95);
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    // label
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(2,7,11,0.55)';
+    ctx.fillRect(cx - 62, cy - 24, 124, 48);
+    ctx.fillStyle = rgba(col, 1);
+    ctx.font = '800 17px ' + FONT;
+    ctx.fillText(p.label, cx, cy - 7);
+    ctx.font = '600 11px ' + FONT;
+    ctx.fillStyle = 'rgba(216,248,255,0.85)';
+    ctx.fillText(p.secs + 's', cx, cy + 12);
+  };
+
+  /* Fingertip contact-sensor target */
+  HUDRenderer.prototype._drawFinger = function (ctx, cx, cy, R, t, f, acc) {
+    var fi = f.finger || {}, beat = f.beat || 0, red = PALETTE.red;
+    var present = !!fi.present;
+    var cov = clamp(fi.coverage || 0, 0, 1);
+    // glow body
+    var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    g.addColorStop(0, rgba(red, present ? 0.18 + 0.3 * beat : 0.04));
+    g.addColorStop(1, rgba(red, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+    // rotating dashed rim
+    ctx.save();
+    ctx.setLineDash([5, 7]);
+    ctx.lineDashOffset = -t * 18;
+    ctx.strokeStyle = rgba(acc, 0.6);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    // coverage arc
+    ctx.strokeStyle = rgba(acc, 0.2);
+    ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.1, -Math.PI / 2, Math.PI * 1.5); ctx.stroke();
+    ctx.strokeStyle = rgba(acc, 0.95);
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.1, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cov); ctx.stroke();
+    // fingerprint ridges
+    ctx.strokeStyle = rgba(present ? red : acc, present ? 0.35 + 0.4 * beat : 0.25);
+    ctx.lineWidth = 1.2;
+    for (var i = 1; i <= 5; i++) {
+      var rr = R * 0.14 * i;
+      ctx.beginPath();
+      ctx.arc(cx, cy + R * 0.05, rr, Math.PI * (1.05 + i * 0.02), Math.PI * (1.95 - i * 0.02));
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy - R * 0.02, rr * 0.92, Math.PI * (0.15 + i * 0.03), Math.PI * (0.85 - i * 0.03));
+      ctx.stroke();
+    }
+    // labels
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = '700 11px ' + FONT;
+    ctx.fillStyle = rgba(present ? PALETTE.green : PALETTE.amber, (Math.floor(t * 2) % 2 || present) ? 0.95 : 0.5);
+    ctx.fillText(present ? '[ FINGERTIP CONTACT ]' : '[ COVER REAR CAMERA ]', cx, cy + R * 1.1 + 14);
+    ctx.font = '600 9px ' + FONT;
+    ctx.fillStyle = rgba(acc, 0.7);
+    ctx.fillText((fi.torch ? 'TORCH ON' : 'TORCH UNAVAILABLE · USE BRIGHT LIGHT') + ' · COVER ' + Math.round(cov * 100) + '%', cx, cy + R * 1.1 + 30);
   };
 
   HUDRenderer.prototype._drawFrameChrome = function (ctx, W, H, t, acc) {
@@ -212,15 +316,16 @@
     ctx.stroke();
   };
 
-  HUDRenderer.prototype._drawROIs = function (ctx, T, rois, acc, beat) {
+  HUDRenderer.prototype._drawROIs = function (ctx, T, rois, acc, beat, weights) {
     if (!rois) return;
-    var fillA = 0.05 + 0.16 * beat, strokeA = 0.35 + 0.4 * beat;
     ctx.lineWidth = 1;
-    ctx.fillStyle = rgba(acc, fillA);
-    ctx.strokeStyle = rgba(acc, strokeA);
     for (var i = 0; i < rois.length; i++) {
       var poly = rois[i];
       if (!poly || poly.length < 3) continue;
+      // brightness follows each region's fusion weight (smarter skin selection)
+      var wgt = weights && weights[i] !== undefined ? clamp(weights[i] * 2.5, 0.12, 1) : 1;
+      ctx.fillStyle = rgba(acc, (0.03 + 0.17 * beat) * wgt + 0.02);
+      ctx.strokeStyle = rgba(acc, (0.25 + 0.45 * beat) * wgt + 0.1);
       ctx.beginPath();
       for (var j = 0; j < poly.length; j++) {
         var p = this._mapPoint(T, poly[j].x, poly[j].y);
@@ -323,7 +428,10 @@
       ctx.textBaseline = 'top';
       ctx.textAlign = 'left';
       ctx.fillStyle = rgba(acc, 0.6);
-      ctx.fillText('ROI ▸ FHD · L-CHK · R-CHK', lx0, botY);
+      var wts = f.face && f.face.weights;
+      ctx.fillText(wts
+        ? 'ROI ▸ FHD ' + Math.round(wts[0] * 100) + ' · L ' + Math.round(wts[1] * 100) + ' · R ' + Math.round(wts[2] * 100) + '%'
+        : 'ROI ▸ FHD · L-CHK · R-CHK', lx0, botY);
       ctx.textAlign = 'right';
       var res = f.result;
       ctx.fillText(res && res.bpm ? Math.round(res.bpm) + ' BPM' : '--- BPM', lx1, botY);
@@ -525,7 +633,7 @@
     ctx.textBaseline = 'bottom';
     ctx.textAlign = 'left';
     ctx.fillStyle = rgba(acc, 0.75);
-    ctx.fillText((res.method || 'pos').toUpperCase() + ' · 0.7–3.5 Hz', 4, H - 2);
+    ctx.fillText((res.method || 'pos').toUpperCase() + (res.channel ? '·' + res.channel : '') + ' · 0.7–3.5 Hz', 4, H - 2);
     ctx.textAlign = 'right';
     ctx.fillText('×' + (1 / this.waveScale).toFixed(2) + ' · ' + span + 's', W - 4, H - 2);
   };
